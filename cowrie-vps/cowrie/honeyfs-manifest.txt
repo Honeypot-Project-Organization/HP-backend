@@ -1,0 +1,2 @@
+# Bait files that MUST be present in cowrie-vps/cowrie-honeyfs/ for the image to build.
+# One path per line, relative to the fake filesystem root. Add a line here when you add bait.

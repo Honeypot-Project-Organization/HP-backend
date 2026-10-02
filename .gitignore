@@ -1,0 +1,19 @@
+# Secrets - never commit real values
+.env
+*.env
+!.env.example
+
+# Local backups / archives
+*.tar.gz
+_backup*/
+
+# Python / editors / OS
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+venv/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

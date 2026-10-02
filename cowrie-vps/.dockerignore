@@ -1,0 +1,7 @@
+# Build context is cowrie-vps/. Only the cowrie/ build files, the bait
+# directory and the shipper are needed - never secrets.
+.env
+*.env
+!.env.example
+**/__pycache__
+*.tar.gz

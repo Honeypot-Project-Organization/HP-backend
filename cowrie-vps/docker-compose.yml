@@ -1,0 +1,97 @@
+# Honeypot VPS stack: Cowrie (the fake SSH server) + the log shipper.
+#
+# Fixed project name so network/volume names are predictable
+# (e.g. the honeypot network is always "honeypot_honeynet").
+#
+# Isolation design (see setup guide, Step 9):
+#   * Cowrie runs on its own network, "honeynet", with a FIXED subnet. A host
+#     firewall rule (DOCKER-USER chain) drops every NEW outbound connection
+#     from that subnet, so an attacker inside Cowrie can't use this server to
+#     reach anything else. Attackers can still connect IN and get replies.
+#   * The shipper is on a separate network so its outbound HTTPS to the API
+#     is not affected by that rule. It shares only the log volume with
+#     Cowrie (read-only on the shipper side).
+#   * ufw does NOT filter container traffic - Docker bypasses it. That's why
+#     the DOCKER-USER rule exists. It also means any port published below is
+#     open to the internet regardless of ufw: publish nothing else here.
+
+name: honeypot
+
+services:
+  cowrie:
+    build:
+      context: .
+      dockerfile: cowrie/Dockerfile
+    image: honeypot-cowrie:local
+    restart: unless-stopped
+    ports:
+      - "22:2222"   # host port 22 -> Cowrie's SSH port inside the container
+    environment:
+      COWRIE_HONEYPOT_HOSTNAME: webapp-prod-03
+      # Also baked into the image; repeated here so it's visible in review.
+      COWRIE_SSH_FORWARDING: "false"
+      COWRIE_SSH_FORWARD_REDIRECT: "false"
+      COWRIE_SSH_FORWARD_TUNNEL: "false"
+      COWRIE_SSH_SFTP_ENABLED: "false"
+      COWRIE_TELNET_ENABLED: "false"
+    volumes:
+      # The fake filesystem (bait) is baked into the image at build time -
+      # see cowrie/Dockerfile. Only config and logs are mounted.
+      - ./cowrie-etc/userdb.txt:/cowrie/cowrie-git/etc/userdb.txt:ro
+      - cowrie_logs:/cowrie/cowrie-git/var/log/cowrie
+      # tty session recordings etc. Named (not anonymous) so the cleanup
+      # cron in the setup guide can find it.
+      - cowrie_state:/cowrie/cowrie-git/var/lib/cowrie
+    networks:
+      - honeynet
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
+    pids_limit: 256
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  log-shipper:
+    build: ./shipper
+    image: honeypot-shipper:local
+    restart: unless-stopped
+    volumes:
+      - cowrie_logs:/cowrie-logs:ro
+      - shipper_state:/state
+    environment:
+      INGEST_URL: ${INGEST_URL:?Set INGEST_URL in cowrie-vps/.env}
+      INGEST_API_KEY: ${INGEST_API_KEY:?Set INGEST_API_KEY in cowrie-vps/.env}
+    networks:
+      - egress
+    depends_on:
+      - cowrie
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 256m
+    cpus: 0.5
+    pids_limit: 64
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+networks:
+  honeynet:
+    driver: bridge
+    ipam:
+      config:
+        # Must match the subnet in the DOCKER-USER firewall rule (Step 9).
+        - subnet: 172.30.0.0/24
+  egress:
+    driver: bridge
+
+volumes:
+  cowrie_logs:
+  cowrie_state:
+  shipper_state:

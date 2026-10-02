@@ -1,0 +1,69 @@
+# Local development stack - the whole pipeline on your own laptop, no VPS
+# or Atlas needed. From the repo root:
+#
+#   docker compose -f docker-compose.dev.yml up --build
+#   docker compose -f docker-compose.dev.yml exec api python scripts/create_admin.py
+#   ssh -p 2222 root@127.0.0.1            # log into the honeypot (root / Summer2024!)
+#   curl http://127.0.0.1:8000/health
+#   API docs: http://127.0.0.1:8000/docs
+#
+# Everything is bound to 127.0.0.1 so nothing is reachable from your
+# network. The secrets below are DEV-ONLY - never reuse them anywhere real.
+# Works without the bait files (REQUIRE_BAIT=false); copy them into
+# cowrie-vps/cowrie-honeyfs/ if you want to see them in the fake shell.
+
+name: honeypot-dev
+
+services:
+  mongo:
+    image: mongo:8.0
+    ports:
+      - "127.0.0.1:27017:27017"   # for MongoDB Compass; local only
+    volumes:
+      - mongo_data:/data/db
+
+  api:
+    build: ./fastapi-backend
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      MONGO_URI: mongodb://mongo:27017
+      DB_NAME: honeypot
+      INGEST_API_KEY: dev-only-ingest-key-0123456789abcdef0123456789abcdef
+      JWT_SECRET_KEY: dev-only-jwt-secret-fedcba9876543210fedcba9876543210
+      CORS_ALLOWED_ORIGIN: http://localhost:5173
+      ENABLE_API_DOCS: "true"
+    depends_on:
+      - mongo
+
+  cowrie:
+    build:
+      context: ./cowrie-vps
+      dockerfile: cowrie/Dockerfile
+      args:
+        REQUIRE_BAIT: "false"
+    ports:
+      - "127.0.0.1:2222:2222"
+    environment:
+      COWRIE_HONEYPOT_HOSTNAME: webapp-dev-01
+    volumes:
+      - ./cowrie-vps/cowrie-etc/userdb.txt:/cowrie/cowrie-git/etc/userdb.txt:ro
+      - cowrie_logs:/cowrie/cowrie-git/var/log/cowrie
+
+  log-shipper:
+    build: ./cowrie-vps/shipper
+    volumes:
+      - cowrie_logs:/cowrie-logs:ro
+      - shipper_state:/state
+    environment:
+      INGEST_URL: http://api:8000/ingest
+      INGEST_API_KEY: dev-only-ingest-key-0123456789abcdef0123456789abcdef
+      ALLOW_INSECURE_HTTP: "1"   # plain HTTP is OK only inside this local stack
+    depends_on:
+      - api
+      - cowrie
+
+volumes:
+  mongo_data:
+  cowrie_logs:
+  shipper_state:
