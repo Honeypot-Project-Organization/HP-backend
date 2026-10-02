@@ -1,0 +1,12 @@
+# Which username/password pairs Cowrie accepts. Format: username:x:password
+# (verified against Cowrie 3.0.15's bundled etc/userdb.example)
+#   *            accept any password for this user
+#   !password    explicitly REJECT this password (a leading "!" means deny)
+#   /regex/i     accept passwords matching a regex
+# Rules are checked top to bottom; first match wins.
+#
+# Cowrie reads this file as plain ASCII - an accented or other non-ASCII
+# character makes Cowrie fail to load it.
+
+root:x:examplePassword
+dave:x:examplePassword

@@ -1,0 +1,26 @@
+# Shared git hooks for the whole team. One-time setup per clone:
+#   pip install pre-commit
+#   pre-commit install
+# After that, every `git commit` runs these checks automatically.
+repos:
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks            # blocks commits containing real-looking secrets
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: detect-private-key
+        exclude: ^cowrie-vps/cowrie-honeyfs/
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+      - id: check-yaml
+  - repo: local
+    hooks:
+      - id: block-real-env-files
+        name: Block real .env files
+        entry: Real .env files must never be committed (only .env.example).
+        language: fail
+        files: (^|/)(\.env|[^/]*\.env)$

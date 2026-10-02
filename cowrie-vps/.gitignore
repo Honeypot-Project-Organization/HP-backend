@@ -1,0 +1,12 @@
+# Secrets - never commit real values (INGEST_URL/INGEST_API_KEY live here)
+.env
+*.env
+!.env.example
+
+# Bait files: realistic fake keys/credentials. Kept out of git on purpose
+# (see cowrie-honeyfs/README.md). Only the README is tracked.
+cowrie-honeyfs/*
+!cowrie-honeyfs/README.md
+
+# Docker/OS cruft
+.DS_Store

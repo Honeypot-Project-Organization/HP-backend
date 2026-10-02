@@ -1,0 +1,12 @@
+# gitleaks config: default rules, plus paths that are expected to contain
+# realistic-but-fake credentials.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Honeypot bait and dev-only values"
+paths = [
+  '''cowrie-vps/cowrie-honeyfs/''',   # bait (also gitignored)
+  '''docker-compose\.dev\.yml''',     # dev-only secrets, localhost only
+  '''fastapi-backend/tests/''',
+]
