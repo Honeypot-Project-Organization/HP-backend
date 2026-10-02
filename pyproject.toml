@@ -1,0 +1,5 @@
+[tool.fastapi]
+entrypoint = "app.main:app"
+
+[tool.uv]
+package = false
