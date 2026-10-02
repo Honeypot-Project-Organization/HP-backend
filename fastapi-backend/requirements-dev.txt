@@ -1,0 +1,7 @@
+# Local development and tests only - not installed in the production image.
+-r requirements.txt
+pytest==9.1.1
+mongomock-motor==0.0.36
+httpx==0.28.1
+requests==2.34.2
+pip-audit==2.10.1

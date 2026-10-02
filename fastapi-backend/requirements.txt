@@ -1,0 +1,12 @@
+# Pinned so every teammate and every deploy runs the same code.
+# To upgrade: bump a version here, run the tests (see requirements-dev.txt),
+# and run `pip-audit -r requirements.txt` to check for known vulnerabilities.
+fastapi==0.141.1
+uvicorn[standard]==0.54.0
+motor==3.7.1
+pymongo==4.18.2
+pydantic==2.13.5
+pydantic-settings==2.15.0
+slowapi==0.1.10
+bcrypt==5.0.0
+PyJWT==2.15.0
