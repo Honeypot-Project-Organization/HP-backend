@@ -4,7 +4,7 @@ you can verify the whole pipeline works without waiting for a real attacker.
 It uses the same /ingest/batch endpoint as the shipper, then re-sends the
 batch to prove duplicates are ignored.
 
-Usage (from fastapi-backend/):
+Usage (from the backend repo root):
     INGEST_URL=http://localhost:8000/ingest \
     INGEST_API_KEY=your-secret \
     python scripts/test_ingest.py

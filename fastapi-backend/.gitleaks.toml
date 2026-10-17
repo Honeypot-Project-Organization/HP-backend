@@ -1,0 +1,10 @@
+# gitleaks config: default rules, plus paths that are expected to contain
+# realistic-but-fake credentials.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "Honeypot bait, tests and dev-only values"
+paths = [
+  '''tests/''',
+]

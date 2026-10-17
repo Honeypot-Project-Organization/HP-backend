@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -6,8 +7,9 @@ from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
+from app import geo
 from app.config import settings
-from app.database import create_indexes, get_client, ping
+from app.database import close_client, create_indexes, get_database, ping
 from app.limiter import limiter
 from app.middleware import LimitBodySizeMiddleware, SecurityHeadersMiddleware
 from app.routers import auth, dashboard, ingest
@@ -16,8 +18,11 @@ from app.routers import auth, dashboard, ingest
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await create_indexes()
+    # Load the location database in the background so the first request isn't slow.
+    warmup = asyncio.create_task(geo.ensure_loaded(get_database()))
     yield
-    get_client().close()
+    warmup.cancel()
+    await close_client()
 
 
 docs_kwargs = {} if settings.enable_api_docs else {"docs_url": None, "redoc_url": None, "openapi_url": None}

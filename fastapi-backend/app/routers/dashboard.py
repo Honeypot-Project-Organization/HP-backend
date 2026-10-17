@@ -4,15 +4,16 @@ Read-only dashboard API. Every route requires a valid admin JWT.
 Reminder for the frontend: every string returned here that came from the
 honeypot (usernames, passwords, commands, client versions, URLs, file
 names) was typed by an attacker. Render it as text only - see
-docs/FRONTEND_SECURITY.md.
+docs/FRONTEND_SECURITY.md in the frontend repo.
 """
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, Path, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request
 
+from app import geo
 from app.auth import get_current_admin
 from app.config import settings
-from app.database import get_database
+from app.database import aggregate, get_database
 from app.limiter import client_ip
 
 router = APIRouter(prefix="/api", tags=["dashboard"])
@@ -77,7 +78,7 @@ async def get_daily_stats(
             {"$sort": {"_id": -1}},
             {"$limit": days},
         ]
-        async for d in db.sessions.aggregate(pipeline):
+        async for d in await aggregate(db.sessions, pipeline):
             totals[d["_id"]] = totals.get(d["_id"], 0) + d["attacks"]
 
     latest_days = sorted(totals)[-days:]  # oldest-first for charting
@@ -96,7 +97,7 @@ async def get_top_credentials(
         {"$limit": limit},
     ]
     results = []
-    async for doc in db.auth_attempts.aggregate(pipeline):
+    async for doc in await aggregate(db.auth_attempts, pipeline):
         # Separate fields rather than a pre-joined "user:pass" string, so the
         # frontend doesn't have to split attacker text on ":".
         results.append(
@@ -147,13 +148,15 @@ async def list_attackers(
     async for doc in cursor:
         doc["ip"] = doc.pop("_id")
         attackers.append(doc)
+    # Older IPs that predate the geo database get located on first view.
+    await geo.enrich_docs(db, attackers)
     return attackers
 
 
 @router.get("/debug/client-ip")
 async def debug_client_ip(request: Request, current_admin: str = Depends(get_current_admin)) -> Dict[str, Any]:
     """
-    Helps you pick TRUSTED_PROXY_HOPS after deploying (setup guide, Step 0b):
+    Helps you pick TRUSTED_PROXY_HOPS after deploying (assets repo: cowrie_vps_setup_guide.md, Step 0b):
     call this from your own machine, compare with your real public IP
     (e.g. from https://ifconfig.me), and choose the hop count that makes
     `rate_limit_key` equal your IP.
@@ -164,3 +167,88 @@ async def debug_client_ip(request: Request, current_admin: str = Depends(get_cur
         "trusted_proxy_hops": settings.trusted_proxy_hops,
         "rate_limit_key": client_ip(request),
     }
+
+
+# ---- Per-IP and command views (used by the dashboard's detail pages) ----
+
+IP_PATTERN = r"^[0-9A-Fa-f:.]{2,45}$"  # IPv4 / IPv6 characters only
+
+
+@router.get("/ips/{ip}")
+async def get_attacker(
+    ip: str = Path(pattern=IP_PATTERN),
+    current_admin: str = Depends(get_current_admin),
+) -> Dict[str, Any]:
+    db = get_database()
+    doc = await db.ip_intel.find_one({"_id": ip})
+    if not doc:
+        raise HTTPException(status_code=404, detail="IP not found")
+    doc["ip"] = doc.pop("_id")
+    await geo.enrich_docs(db, [doc])
+    return doc
+
+
+@router.get("/ips/{ip}/sessions")
+async def get_ip_sessions(
+    ip: str = Path(pattern=IP_PATTERN),
+    limit: int = Query(100, ge=1, le=MAX_PAGE),
+    skip: int = Query(0, ge=0, le=100_000),
+    current_admin: str = Depends(get_current_admin),
+) -> List[Dict[str, Any]]:
+    db = get_database()
+    cursor = db.sessions.find({"src_ip": ip}).sort("start_time", -1).skip(skip).limit(limit)
+    sessions = []
+    async for doc in cursor:
+        doc["id"] = str(doc.pop("_id"))
+        sessions.append(doc)
+    return sessions
+
+
+@router.get("/ips/{ip}/commands")
+async def get_ip_commands(
+    ip: str = Path(pattern=IP_PATTERN),
+    limit: int = Query(MAX_PAGE, ge=1, le=MAX_PAGE),
+    skip: int = Query(0, ge=0, le=100_000),
+    current_admin: str = Depends(get_current_admin),
+) -> List[Dict[str, Any]]:
+    db = get_database()
+    cursor = db.commands.find({"src_ip": ip}).sort("timestamp", -1).skip(skip).limit(limit)
+    commands = []
+    async for doc in cursor:
+        doc["id"] = str(doc.pop("_id"))
+        commands.append(doc)
+    return commands
+
+
+@router.get("/commands")
+async def list_commands(
+    limit: int = Query(100, ge=1, le=MAX_PAGE),
+    skip: int = Query(0, ge=0, le=100_000),
+    current_admin: str = Depends(get_current_admin),
+) -> List[Dict[str, Any]]:
+    db = get_database()
+    cursor = db.commands.find().sort("timestamp", -1).skip(skip).limit(limit)
+    commands = []
+    async for doc in cursor:
+        doc["id"] = str(doc.pop("_id"))
+        commands.append(doc)
+    return commands
+
+
+@router.get("/sessions/{session_id}")
+async def get_session(
+    session_id: str = Path(pattern=r"^[A-Za-z0-9_-]{1,64}$"),
+    current_admin: str = Depends(get_current_admin),
+) -> Dict[str, Any]:
+    db = get_database()
+    doc = await db.sessions.find_one({"_id": session_id})
+    if not doc:
+        raise HTTPException(status_code=404, detail="Session not found")
+    doc["id"] = str(doc.pop("_id"))
+    return doc
+
+
+@router.get("/geo/status")
+async def geo_status(current_admin: str = Depends(get_current_admin)) -> Dict[str, Any]:
+    """Which location databases have been uploaded (metadata only)."""
+    return await geo.get_status(get_database())

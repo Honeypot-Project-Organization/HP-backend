@@ -22,6 +22,7 @@ from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request, st
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from pymongo.errors import DuplicateKeyError
 
+from app import geo
 from app.config import settings
 from app.database import get_database
 from app.limiter import limiter
@@ -204,6 +205,8 @@ async def process_event(raw: Any) -> str:
             upsert=True,
         )
         await _ip_touch(db, ip, ts, now, {"total_sessions": 1})
+        # Location lookup, once per IP (no-op if already done or no database uploaded).
+        await geo.enrich_ip(db, ip)
 
     elif eid in ("cowrie.login.success", "cowrie.login.failed"):
         success = eid == "cowrie.login.success"
