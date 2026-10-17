@@ -1,0 +1,15 @@
+# Normalize line endings so files edited on Windows still work on the Linux
+# VPS and inside Linux containers. (A shell script with CRLF endings fails
+# with "bad interpreter"; git hooks too.)
+* text=auto eol=lf
+*.sh text eol=lf
+*.py text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+Dockerfile text eol=lf
+*.txt text eol=lf
+
+# Binary bait/backups - never touch.
+*.gz binary
+*.dat binary
+*.pickle binary

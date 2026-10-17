@@ -1,6 +1,6 @@
 """
 API tests against an in-memory fake MongoDB (mongomock-motor) - no Atlas
-needed. From fastapi-backend/:
+needed. From the backend repo root:
 
     pip install -r requirements-dev.txt
     python -m pytest tests
@@ -218,6 +218,26 @@ class ApiTests(unittest.TestCase):
         r = self.client.get("/api/stats/daily?days=365", headers=headers)
         self.assertEqual(r.json()[0]["date"], "2025-12-31")
 
+    def test_detail_routes(self):
+        self.make_admin()
+        for e in (ev("cowrie.session.connect", dst_port=22, protocol="ssh"),
+                  ev("cowrie.login.success", username="root", password="x"),
+                  ev("cowrie.command.input", input="uname -a")):
+            self.client.post("/ingest", json=e, headers=INGEST)
+        tok = self.client.post("/login", json={"username": "admin", "password": "correct horse battery"}).json()["access_token"]
+        h = {"Authorization": f"Bearer {tok}"}
+        ip = "203.0.113.9"
+        self.assertEqual(self.client.get(f"/api/ips/{ip}", headers=h).json()["ip"], ip)
+        self.assertEqual(len(self.client.get(f"/api/ips/{ip}/sessions", headers=h).json()), 1)
+        self.assertEqual(self.client.get(f"/api/ips/{ip}/commands", headers=h).json()[0]["input"], "uname -a")
+        self.assertEqual(self.client.get("/api/commands", headers=h).json()[0]["input"], "uname -a")
+        self.assertEqual(self.client.get("/api/sessions/abc123", headers=h).json()["id"], "abc123")
+        self.assertEqual(self.client.get("/api/sessions/nope", headers=h).status_code, 404)
+        self.assertEqual(self.client.get("/api/ips/9.9.9.9", headers=h).status_code, 404)
+        self.assertEqual(self.client.get("/api/ips/bad%20ip", headers=h).status_code, 422)
+        self.assertEqual(self.client.get(f"/api/ips/{ip}").status_code, 401)
+
+
     def test_security_headers_and_cors(self):
         r = self.client.get("/health")
         self.assertEqual(r.headers["x-content-type-options"], "nosniff")
@@ -229,6 +249,42 @@ class ApiTests(unittest.TestCase):
     def test_docs_disabled_by_default(self):
         self.assertEqual(self.client.get("/docs").status_code, 404)
         self.assertEqual(self.client.get("/openapi.json").status_code, 404)
+
+
+
+class DriverCompatTests(unittest.TestCase):
+    """The helpers must cope with PyMongo's async API (coroutines) AND the
+    in-memory fake (plain returns)."""
+
+    def test_aggregate_and_close_handle_both_shapes(self):
+        import asyncio
+
+        class Cursor:  # what the fake / old Motor returned directly
+            pass
+
+        class SyncAgg:
+            def aggregate(self, pipeline):
+                return "cursor"
+
+        class AsyncAgg:  # what PyMongo's AsyncCollection does
+            async def aggregate(self, pipeline):
+                return "cursor"
+
+        class AsyncClose:
+            closed = False
+
+            async def close(self):
+                AsyncClose.closed = True
+
+        async def run():
+            self.assertEqual(await database.aggregate(SyncAgg(), []), "cursor")
+            self.assertEqual(await database.aggregate(AsyncAgg(), []), "cursor")
+            database._client = AsyncClose()
+            await database.close_client()
+            self.assertTrue(AsyncClose.closed)
+            self.assertIsNone(database._client)
+
+        asyncio.run(run())
 
 
 class LimiterKeyTests(unittest.TestCase):

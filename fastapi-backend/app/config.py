@@ -31,12 +31,12 @@ class Settings(BaseSettings):
 
     # How many reverse proxies sit in front of this app and append to
     # X-Forwarded-For. 0 = use the direct TCP peer address (local dev).
-    # See app/limiter.py and the setup guide for how to pick the value.
+    # See app/limiter.py and the assets-repo setup guide for how to pick the value.
     trusted_proxy_hops: int = 0
 
     # raw_events older than this are deleted automatically by a MongoDB TTL
     # index, so the free Atlas tier (512 MB) doesn't fill up. 0 disables.
-    raw_event_retention_days: int = 30
+    raw_event_retention_days: int = 7
 
     # Serve /docs and /openapi.json. Handy locally; turn off in production.
     enable_api_docs: bool = False

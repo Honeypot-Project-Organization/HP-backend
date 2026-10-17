@@ -1,31 +1,52 @@
+import inspect
 import logging
-from typing import Optional
+from typing import Any, Optional
 
-from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
-from pymongo import ASCENDING, DESCENDING
+from pymongo import ASCENDING, DESCENDING, AsyncMongoClient
 from pymongo.errors import OperationFailure
 
 from app.config import settings
 
 log = logging.getLogger(__name__)
 
-_client: Optional[AsyncIOMotorClient] = None
+# PyMongo's native async client (Motor is deprecated as of 2026-05-14).
+_client: Optional[AsyncMongoClient] = None
 
 
-def get_client() -> AsyncIOMotorClient:
+def get_client() -> AsyncMongoClient:
     global _client
     if _client is None:
         # tz_aware=True: datetimes come back as timezone-aware UTC, matching
         # what ingest.py writes. serverSelectionTimeoutMS keeps a bad
         # MONGO_URI from hanging startup for the 30s default.
-        _client = AsyncIOMotorClient(
+        _client = AsyncMongoClient(
             settings.mongo_uri, tz_aware=True, serverSelectionTimeoutMS=10_000
         )
     return _client
 
 
-def get_database() -> AsyncIOMotorDatabase:
+def get_database() -> Any:
     return get_client()[settings.db_name]
+
+
+async def close_client() -> None:
+    """AsyncMongoClient.close() is a coroutine (Motor's was a plain call). The
+    isawaitable check also keeps the in-memory test fake working."""
+    global _client
+    client, _client = _client, None
+    if client is not None:
+        result = client.close()
+        if inspect.isawaitable(result):
+            await result
+
+
+async def aggregate(collection: Any, pipeline: list) -> Any:
+    """PyMongo's async aggregate() must be awaited to get the cursor (Motor's
+    returned it directly). Handles both so the test fake keeps working."""
+    cursor = collection.aggregate(pipeline)
+    if inspect.isawaitable(cursor):
+        cursor = await cursor
+    return cursor
 
 
 async def ping() -> bool:
@@ -36,7 +57,7 @@ async def ping() -> bool:
         return False
 
 
-async def _ensure_raw_event_ttl(db: AsyncIOMotorDatabase) -> None:
+async def _ensure_raw_event_ttl(db: Any) -> None:
     """
     TTL index on raw_events.received_at so old raw events are deleted
     automatically (Atlas M0 has 512 MB total). The normalized collections
@@ -88,6 +109,7 @@ async def create_indexes() -> None:
 
     await db.commands.create_index([("session_id", ASCENDING), ("timestamp", ASCENDING)])
     await db.commands.create_index([("src_ip", ASCENDING), ("timestamp", DESCENDING)])
+    await db.commands.create_index([("timestamp", DESCENDING)])
 
     await db.downloads.create_index([("session_id", ASCENDING)])
     await db.downloads.create_index([("sha256", ASCENDING)])

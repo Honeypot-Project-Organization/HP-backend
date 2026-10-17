@@ -2,7 +2,7 @@
 One-time migration for data ingested BEFORE the security update, when
 timestamps were stored as ISO strings instead of real dates.
 
-Run once from fastapi-backend/ (safe to re-run - it only touches string
+Run once from the backend repo root (safe to re-run - it only touches string
 values):   python scripts/migrate_timestamps.py
 
 Newer data is already stored as dates. The dashboard copes with mixed data,
@@ -15,7 +15,7 @@ from pathlib import Path
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from app.database import get_client, get_database  # noqa: E402
+from app.database import close_client, get_database  # noqa: E402
 
 FIELDS = {
     "sessions": ["start_time", "end_time"],
@@ -47,7 +47,7 @@ async def main() -> None:
                 await db[collection].update_one({"_id": doc["_id"]}, {"$set": {field: dt}})
                 converted += 1
             print(f"{collection}.{field}: converted {converted}, unparseable {skipped}")
-    get_client().close()
+    await close_client()
 
 
 if __name__ == "__main__":
