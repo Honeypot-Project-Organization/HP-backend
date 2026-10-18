@@ -32,7 +32,7 @@ needed), see **Local development** at the end.
    This is your `MONGO_URI`.
 5. **Indexes are automatic.** The API creates every index it needs on
    startup, including a TTL index that deletes raw events after
-   `RAW_EVENT_RETENTION_DAYS` (default 30), so the 512 MB free tier doesn't
+   `RAW_EVENT_RETENTION_DAYS` (default 7), so the 512 MB free tier doesn't
    fill up. You can also run `python scripts/init_db.py` from
    `fastapi-backend/` by hand.
 6. **Upgrading from the old version, with data already in Atlas?** Run
