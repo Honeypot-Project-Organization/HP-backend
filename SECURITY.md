@@ -69,7 +69,7 @@ secrets are the same.
 - Every list endpoint has a bounded `limit`. `/docs` is off by default.
   Strict security headers are on every response. CORS allows only the
   dashboard origin.
-- Raw events expire after `RAW_EVENT_RETENTION_DAYS` (default 30).
+- Raw events expire after `RAW_EVENT_RETENTION_DAYS` (default 7; see docs/data-retention.md).
 
 **Frontend.** See `docs/FRONTEND_SECURITY.md`. All displayed data is
 attacker-controlled; render it as text only.
