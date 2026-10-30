@@ -29,7 +29,11 @@ python scripts/upload_geoip.py --city city.mmdb --asn asn.mmdb
 ```
 Never commit `.env` or `*.mmdb`.
 
+After upgrading from an older version, run `python scripts/backfill.py` once (the API also does the same in
+the background when it starts). It adds the grouping key to old commands, fills missing session durations and
+locates IPs that have no location yet.
+
 ## Layout
 `app/` the API (`routers/` ingest, auth, dashboard; `geo.py` locations; `models/`),
-`scripts/` one-off tools (create_admin, init_db, migrate_timestamps, test_ingest, upload_geoip),
+`scripts/` one-off tools (create_admin, init_db, migrate_timestamps, test_ingest, upload_geoip, backfill),
 `tests/` unit tests (no real database needed).

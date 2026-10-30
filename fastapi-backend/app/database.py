@@ -110,6 +110,7 @@ async def create_indexes() -> None:
     await db.commands.create_index([("session_id", ASCENDING), ("timestamp", ASCENDING)])
     await db.commands.create_index([("src_ip", ASCENDING), ("timestamp", DESCENDING)])
     await db.commands.create_index([("timestamp", DESCENDING)])
+    await db.commands.create_index([("cmd_key", ASCENDING), ("timestamp", DESCENDING)])
 
     await db.downloads.create_index([("session_id", ASCENDING)])
     await db.downloads.create_index([("sha256", ASCENDING)])
@@ -117,6 +118,9 @@ async def create_indexes() -> None:
 
     # ip_intel: _id IS the IP address itself - already unique by nature of _id.
     await db.ip_intel.create_index([("last_seen", DESCENDING)])
+    await db.ip_intel.create_index([("first_seen", DESCENDING)])
+    await db.ip_intel.create_index([("total_sessions", DESCENDING)])
+    await db.ip_intel.create_index([("geo.country_code", ASCENDING)])
 
     # raw_events: _id is a SHA-256 of the event's content (see ingest.py),
     # which is what makes re-sent events idempotent.

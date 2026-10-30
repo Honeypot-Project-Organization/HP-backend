@@ -299,3 +299,26 @@ async def enrich_docs(db: Any, docs: List[Dict[str, Any]], limit: int = BACKFILL
     except Exception:  # noqa: BLE001
         log.exception("geoip backfill failed")
         return 0
+
+
+async def _locate_one(db: Any, ip: str) -> bool:
+    geo = lookup(ip, _state.city, _state.asn, _state.source)
+    res = await db.ip_intel.update_one({"_id": ip, "geo": {"$exists": False}}, {"$set": {"geo": geo}})
+    return bool(getattr(res, "modified_count", 1))
+
+
+async def backfill(db: Any, limit: int = 500, chunk: int = 25) -> int:
+    """Locate up to `limit` IPs that have no `geo` yet, `chunk` lookups at a
+    time. Returns how many were saved. Never raises."""
+    try:
+        if not await ensure_loaded(db):
+            return 0
+        ips = [d["_id"] async for d in db.ip_intel.find({"geo": {"$exists": False}}, {"_id": 1}).limit(limit)]
+        done = 0
+        for i in range(0, len(ips), chunk):
+            results = await asyncio.gather(*(_locate_one(db, ip) for ip in ips[i:i + chunk]))
+            done += sum(1 for r in results if r)
+        return done
+    except Exception:  # noqa: BLE001
+        log.exception("geoip bulk backfill failed")
+        return 0
