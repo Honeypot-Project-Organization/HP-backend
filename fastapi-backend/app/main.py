@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
-from app import geo
+from app import backfill, geo
 from app.config import settings
 from app.database import close_client, create_indexes, get_database, ping
 from app.limiter import limiter
@@ -20,8 +20,11 @@ async def lifespan(app: FastAPI):
     await create_indexes()
     # Load the location database in the background so the first request isn't slow.
     warmup = asyncio.create_task(geo.ensure_loaded(get_database()))
+    # Repair older rows (command keys, durations, locations) without blocking startup.
+    repair = asyncio.create_task(backfill.run_in_background(get_database()))
     yield
     warmup.cancel()
+    repair.cancel()
     await close_client()
 
 
@@ -44,6 +47,7 @@ app.add_middleware(
     allow_credentials=False,
     allow_methods=["GET", "POST"],
     allow_headers=["Authorization", "Content-Type"],
+    expose_headers=["X-Total-Count"],
     max_age=600,
 )
 

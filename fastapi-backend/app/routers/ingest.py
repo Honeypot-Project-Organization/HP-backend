@@ -23,6 +23,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from pymongo.errors import DuplicateKeyError
 
 from app import geo
+from app.cmdkey import cmd_key
 from app.config import settings
 from app.database import get_database
 from app.limiter import limiter
@@ -82,7 +83,8 @@ class CowrieEvent(BaseModel):
     outfile: Optional[str] = None
     shasum: Optional[str] = Field(default=None, pattern=r"^[0-9a-fA-F]{64}$")
     size: Optional[int] = Field(default=None, ge=0)
-    duration: Optional[float] = Field(default=None, ge=0)
+    duration: Optional[float] = Field(default=None, ge=0)      # seconds (older Cowrie)
+    duration_ms: Optional[float] = Field(default=None, ge=0)   # milliseconds (documented for newer Cowrie)
 
     @field_validator("src_ip")
     @classmethod
@@ -232,7 +234,8 @@ async def process_event(raw: Any) -> str:
 
     elif eid in ("cowrie.command.input", "cowrie.command.failed"):
         await db.commands.insert_one(
-            {"session_id": sid, "src_ip": ip, "timestamp": ts, "input": ev.input or ""}
+            {"session_id": sid, "src_ip": ip, "timestamp": ts, "input": ev.input or "",
+             "cmd_key": cmd_key(ev.input or "")}
         )
         await db.sessions.update_one({"_id": sid}, {"$inc": {"command_count": 1}})
         await _ip_touch(db, ip, ts, now, {"total_commands": 1})
@@ -255,9 +258,21 @@ async def process_event(raw: Any) -> str:
         await db.sessions.update_one({"_id": sid}, {"$set": {"client_version": ev.version}})
 
     elif eid == "cowrie.session.closed":
+        # Cowrie versions differ: `duration` (seconds) or `duration_ms`.
+        duration = ev.duration
+        if duration is None and ev.duration_ms is not None:
+            duration = ev.duration_ms / 1000.0
+        if duration is None:
+            # Not reported: fall back to closing time minus start time.
+            sess = await db.sessions.find_one({"_id": sid}, {"start_time": 1})
+            st = sess.get("start_time") if sess else None
+            if isinstance(st, datetime):
+                if st.tzinfo is None:
+                    st = st.replace(tzinfo=timezone.utc)
+                duration = max(0.0, (ts - st).total_seconds())
         await db.sessions.update_one(
             {"_id": sid},
-            {"$set": {"status": "closed", "duration_seconds": ev.duration, "end_time": ts}},
+            {"$set": {"status": "closed", "duration_seconds": duration, "end_time": ts}},
         )
 
     return "ok"

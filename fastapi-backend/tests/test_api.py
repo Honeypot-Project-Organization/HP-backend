@@ -238,6 +238,117 @@ class ApiTests(unittest.TestCase):
         self.assertEqual(self.client.get(f"/api/ips/{ip}").status_code, 401)
 
 
+    def _seed(self):
+        """3 IPs, 5 sessions, commands, so paging/filtering can be checked."""
+        base = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        sessions = [
+            {"_id": f"s{i}", "src_ip": ip, "start_time": base + timedelta(hours=i),
+             "login_success": ok, "duration_seconds": float(i), "command_count": i, "username": "u"}
+            for i, (ip, ok) in enumerate([("10.0.0.1", True), ("10.0.0.2", False), ("10.0.0.11", False),
+                                          ("192.168.1.5", True), ("10.0.0.1", False)])
+        ]
+        self.run_async(self.db().sessions.insert_many(sessions))
+        ips = [{"_id": ip, "total_sessions": n, "first_seen": base, "last_seen": base + timedelta(days=d)}
+               for ip, n, d in [("10.0.0.1", 5, 3), ("10.0.0.2", 1, 1), ("10.0.0.11", 2, 2), ("192.168.1.5", 9, 5)]]
+        self.run_async(self.db().ip_intel.insert_many(ips))
+
+    def test_sessions_filters_apply_to_all_rows_and_total_header(self):
+        self.make_admin()
+        h = self.login()
+        self._seed()
+        r = self.client.get("/api/sessions?limit=2&skip=0", headers=h)
+        self.assertEqual(r.headers["x-total-count"], "5")
+        self.assertEqual(len(r.json()), 2)
+        r = self.client.get("/api/sessions?q=10.0.0.1&limit=1", headers=h)  # matches 10.0.0.1 and 10.0.0.11
+        self.assertEqual(r.headers["x-total-count"], "3")
+        r = self.client.get("/api/sessions?login=granted", headers=h)
+        self.assertEqual(r.headers["x-total-count"], "2")
+        r = self.client.get("/api/sessions?login=denied&q=10.0.0.1", headers=h)
+        self.assertEqual(r.headers["x-total-count"], "2")
+        r = self.client.get("/api/sessions?date_from=2026-09-01T02:00:00Z&date_to=2026-09-01T03:00:00Z", headers=h)
+        self.assertEqual(sorted(s["id"] for s in r.json()), ["s2", "s3"])
+        r = self.client.get("/api/sessions?sort=duration_seconds&order=asc&limit=1", headers=h)
+        self.assertEqual(r.json()[0]["id"], "s0")
+        self.assertEqual(self.client.get("/api/sessions?sort=password", headers=h).status_code, 422)
+        self.assertEqual(self.client.get("/api/sessions?date_from=2026-09-02T00:00:00Z&date_to=2026-09-01T00:00:00Z",
+                                         headers=h).status_code, 422)
+        # regex characters in the search box are literal
+        r = self.client.get("/api/sessions?q=.*", headers=h)
+        self.assertEqual(r.headers["x-total-count"], "0")
+
+    def test_attackers_filters_sort_and_total(self):
+        self.make_admin()
+        h = self.login()
+        self._seed()
+        r = self.client.get("/api/ips?sort=total_sessions&order=desc&limit=2", headers=h)
+        self.assertEqual([a["ip"] for a in r.json()], ["192.168.1.5", "10.0.0.1"])
+        self.assertEqual(r.headers["x-total-count"], "4")
+        r = self.client.get("/api/ips?q=10.0.0.1", headers=h)
+        self.assertEqual(r.headers["x-total-count"], "2")
+        r = self.client.get("/api/ips?date_from=2026-09-03T00:00:00Z", headers=h)  # last_seen >= Sep 3
+        self.assertEqual(sorted(a["ip"] for a in r.json()), ["10.0.0.1", "192.168.1.5"])
+
+    def test_command_groups_over_all_commands(self):
+        self.make_admin()
+        h = self.login()
+        for i in range(3):
+            for e in (ev("cowrie.session.connect", session=f"c{i}", src_ip=f"10.1.0.{i}"),
+                      ev("cowrie.command.input", session=f"c{i}", src_ip=f"10.1.0.{i}", input="uname -a ")):
+                self.client.post("/ingest", json=e, headers=INGEST)
+        self.client.post("/ingest", json=ev("cowrie.command.input", session="c0", src_ip="10.1.0.0", input="ls",
+                                            timestamp="2026-09-20T10:00:05.000000Z"), headers=INGEST)
+        r = self.client.get("/api/commands/groups", headers=h)
+        self.assertEqual(r.headers["x-total-count"], "2")
+        top = r.json()[0]
+        self.assertEqual((top["text"].strip(), top["count"], top["ip_count"], top["session_count"]), ("uname -a", 3, 3, 3))
+        r = self.client.get("/api/commands/groups?q=LS", headers=h)
+        self.assertEqual(r.headers["x-total-count"], "1")
+        self.assertEqual(self.client.get(f"/api/commands/groups/{top['key']}", headers=h).json()["count"], 3)
+        occ = self.client.get(f"/api/commands/groups/{top['key']}/occurrences?limit=2", headers=h)
+        self.assertEqual((len(occ.json()), occ.headers["x-total-count"]), (2, "3"))
+        self.assertEqual(self.client.get("/api/commands/groups/" + "0" * 24, headers=h).status_code, 404)
+        self.assertEqual(self.client.get("/api/commands/groups/NOTAKEY", headers=h).status_code, 422)
+
+    def test_session_duration_from_seconds_ms_or_timestamps(self):
+        self.make_admin()
+        h = self.login()
+        t0 = "2026-09-20T10:00:00.000000Z"
+        cases = {
+            "d1": ({"duration": 12.5}, 12.5),
+            "d2": ({"duration_ms": 3400}, 3.4),
+            "d3": ({}, 30.0),  # neither field: closing time - start time
+        }
+        for sid, (extra, _) in cases.items():
+            self.client.post("/ingest", json=ev("cowrie.session.connect", session=sid, timestamp=t0), headers=INGEST)
+            self.client.post("/ingest", json=ev("cowrie.session.closed", session=sid,
+                                                timestamp="2026-09-20T10:00:30.000000Z", **extra), headers=INGEST)
+        for sid, (_, want) in cases.items():
+            got = self.client.get(f"/api/sessions/{sid}", headers=h).json()["duration_seconds"]
+            self.assertAlmostEqual(got, want, places=3, msg=sid)
+
+    def test_backfill_repairs_old_rows(self):
+        from app import backfill
+        t = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        self.run_async(self.db().commands.insert_many([
+            {"session_id": "a", "src_ip": "1.1.1.1", "timestamp": t, "input": "id"},
+            {"session_id": "b", "src_ip": "1.1.1.2", "timestamp": t, "input": " id "},
+        ]))
+        self.run_async(self.db().sessions.insert_one(
+            {"_id": "x", "status": "closed", "start_time": t, "end_time": t + timedelta(seconds=7)}))
+        self.run_async(backfill.backfill_command_keys(self.db()))
+        self.run_async(backfill.backfill_durations(self.db()))
+        keys = {d["cmd_key"] for d in self.client.portal.call(lambda: self.db().commands.find().to_list(10))}
+        self.assertEqual(len(keys), 1)  # "id" and " id " are the same command
+        self.assertEqual(self.client.portal.call(lambda: self.db().sessions.find_one({"_id": "x"}))["duration_seconds"], 7.0)
+
+    def test_total_count_header_is_exposed_to_the_browser(self):
+        r = self.client.options("/api/sessions", headers={"Origin": "http://localhost:5173",
+                                                          "Access-Control-Request-Method": "GET"})
+        self.assertEqual(r.status_code, 200)
+        self.make_admin()
+        r = self.client.get("/api/sessions", headers={**self.login(), "Origin": "http://localhost:5173"})
+        self.assertIn("x-total-count", r.headers["access-control-expose-headers"].lower())
+
     def test_security_headers_and_cors(self):
         r = self.client.get("/health")
         self.assertEqual(r.headers["x-content-type-options"], "nosniff")
