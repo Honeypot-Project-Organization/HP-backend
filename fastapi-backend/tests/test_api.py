@@ -286,7 +286,7 @@ class ApiTests(unittest.TestCase):
         r = self.client.get("/api/ips?q=10.0.0.1", headers=h)
         self.assertEqual(r.headers["x-total-count"], "2")
         r = self.client.get("/api/ips?date_from=2026-09-03T00:00:00Z", headers=h)  # last_seen >= Sep 3
-        self.assertEqual(sorted(a["ip"] for a in r.json()), ["10.0.0.1", "192.168.1.5"])
+        self.assertEqual(sorted(a["ip"] for a in r.json()), ["10.0.0.1", "10.0.0.11", "192.168.1.5"])
 
     def test_command_groups_over_all_commands(self):
         self.make_admin()
