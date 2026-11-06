@@ -24,6 +24,7 @@ from pymongo.errors import DuplicateKeyError
 
 from app import geo
 from app.cmdkey import cmd_key
+from app.mitre import RULES_VERSION, techniques_for_command
 from app.config import settings
 from app.database import get_database
 from app.limiter import limiter
@@ -134,21 +135,23 @@ def event_id(raw: Dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-async def _ip_touch(db: Any, src_ip: Optional[str], ts: datetime, now: datetime, inc: Dict[str, int]) -> None:
+async def _ip_touch(
+    db: Any, src_ip: Optional[str], ts: datetime, now: datetime, inc: Dict[str, int],
+    techniques: Optional[List[str]] = None,
+) -> None:
     if not src_ip:
         return
-    await db.ip_intel.update_one(
-        {"_id": src_ip},
-        {
-            # $min/$max keep first/last seen correct even if events arrive out of order.
-            "$min": {"first_seen": ts},
-            "$max": {"last_seen": ts},
-            "$set": {"updated_at": now},
-            "$setOnInsert": {"threat_score": 0.0},
-            "$inc": inc,
-        },
-        upsert=True,
-    )
+    update: Dict[str, Any] = {
+        # $min/$max keep first/last seen correct even if events arrive out of order.
+        "$min": {"first_seen": ts},
+        "$max": {"last_seen": ts},
+        "$set": {"updated_at": now},
+        "$setOnInsert": {"threat_score": 0.0},
+        "$inc": inc,
+    }
+    if techniques:
+        update["$addToSet"] = {"techniques": {"$each": techniques}}
+    await db.ip_intel.update_one({"_id": src_ip}, update, upsert=True)
 
 
 async def process_event(raw: Any) -> str:
@@ -203,10 +206,11 @@ async def process_event(raw: Any) -> str:
                     "login_success": False,
                     "status": "open",
                 },
+                "$addToSet": {"techniques": "T1133"},  # External Remote Services (see app/mitre.py)
             },
             upsert=True,
         )
-        await _ip_touch(db, ip, ts, now, {"total_sessions": 1})
+        await _ip_touch(db, ip, ts, now, {"total_sessions": 1}, ["T1133"])
         # Location lookup, once per IP (no-op if already done or no database uploaded).
         await geo.enrich_ip(db, ip)
 
@@ -222,23 +226,27 @@ async def process_event(raw: Any) -> str:
                 "timestamp": ts,
             }
         )
+        tech = "T1078" if success else "T1110.001"  # Valid Accounts / Password Guessing
+        session_update: Dict[str, Any] = {"$addToSet": {"techniques": tech}}
         if success:
-            await db.sessions.update_one(
-                {"_id": sid},
-                {"$set": {"login_success": True, "username": ev.username, "password": ev.password}},
-            )
+            session_update["$set"] = {"login_success": True, "username": ev.username, "password": ev.password}
+        await db.sessions.update_one({"_id": sid}, session_update)
         inc = {"total_auth_attempts": 1}
         if success:
             inc["successful_logins"] = 1
-        await _ip_touch(db, ip, ts, now, inc)
+        await _ip_touch(db, ip, ts, now, inc, [tech])
 
     elif eid in ("cowrie.command.input", "cowrie.command.failed"):
+        techs = techniques_for_command(ev.input)
         await db.commands.insert_one(
             {"session_id": sid, "src_ip": ip, "timestamp": ts, "input": ev.input or "",
-             "cmd_key": cmd_key(ev.input or "")}
+             "cmd_key": cmd_key(ev.input or ""), "techniques": techs, "rules_version": RULES_VERSION}
         )
-        await db.sessions.update_one({"_id": sid}, {"$inc": {"command_count": 1}})
-        await _ip_touch(db, ip, ts, now, {"total_commands": 1})
+        session_update = {"$inc": {"command_count": 1}}
+        if techs:
+            session_update["$addToSet"] = {"techniques": {"$each": techs}}
+        await db.sessions.update_one({"_id": sid}, session_update)
+        await _ip_touch(db, ip, ts, now, {"total_commands": 1}, techs)
 
     elif eid in ("cowrie.session.file_upload", "cowrie.session.file_download"):
         await db.downloads.insert_one(
