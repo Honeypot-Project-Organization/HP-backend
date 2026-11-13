@@ -66,3 +66,4 @@ be undone. Export `raw_events` first if the old data is needed.
 | 2026-10-13 | TTL index changed from 30 days (2592000 s) to 7 days in Atlas by hand. `raw_events` dropped from ~266K to ~130K documents. |
 | 2026-10-16 | A backend restart with the old 30-day default reset the index to 2592000 s. |
 | 2026-10-17 | Code default changed to 7 days (HP-backend PR #10) and `RAW_EVENT_RETENTION_DAYS=7` set in FastAPI Cloud. Index verified at 604800 s (~11K documents). |
+| 2026-11-13 | The cluster reached the 512 MB free-tier cap and Atlas blocked writes. With the honeypot off and the team's OK, the `raw_events` collection was dropped (about 150 MB with its indexes), bringing usage to about 257 MB. The backend recreated the collection and the 7-day TTL index on its next startup (HP-backend PR #14 deploy). |

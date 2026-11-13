@@ -28,7 +28,8 @@ missing.
 
 | Secret | Lives in |
 |---|---|
-| MongoDB Atlas connection string (least-privilege user: `readWrite` on the `honeypot` DB only) | `fastapi-backend/.env` / the API host's environment |
+| MongoDB Atlas connection string (the API's own database user, limited by a custom role to the `honeypot-project` database; see `docs/database-security.md`) | The API host's environment (`MONGO_URI`); `fastapi-backend/.env` for local runs |
+| Temporary admin database user (only for one-time scripts) | Never stored. Created in Atlas when needed and set to delete itself (see `docs/database-security.md`) |
 | `INGEST_API_KEY` (shared by the shipper and the API) | `fastapi-backend/.env` and `cowrie-vps/.env` |
 | `JWT_SECRET_KEY` (signs admin logins; must differ from the ingest key) | `fastapi-backend/.env` only |
 | Admin password | Never written to a file. Typed into `create_admin.py` (14+ characters) |
@@ -71,12 +72,27 @@ secrets are the same.
   dashboard origin.
 - Raw events expire after `RAW_EVENT_RETENTION_DAYS` (default 7; see docs/data-retention.md).
 
+**Database (MongoDB Atlas).** See `docs/database-security.md`.
+- The browser never connects to MongoDB. The API is the only client, so
+  every check (login, input validation, bounded queries) happens in the
+  API before a query runs.
+- Atlas requires TLS on every connection and encrypts stored data with
+  AES-256. Only addresses on the IP access list can connect, and every
+  connection must log in as a database user.
+- The API's user has a custom role: it can read and write only the
+  collections it needs, can only read `admins` and the location data, and
+  has no admin rights.
+- There is no permanent admin database user. Scripts that need more
+  (`create_admin.py`, `upload_geoip.py`) use a temporary user that Atlas
+  deletes automatically.
+
 **Frontend.** See `docs/FRONTEND_SECURITY.md`. All displayed data is
 attacker-controlled; render it as text only.
 
 ## If a real secret is ever accidentally committed
 
-1. **Rotate it immediately:** new Atlas password, new `INGEST_API_KEY`,
+1. **Rotate it immediately:** new Atlas password (then update `MONGO_URI`
+   on the API host and redeploy), new `INGEST_API_KEY`,
    new `JWT_SECRET_KEY`, whatever leaked. The old value is compromised the
    moment it's pushed, whatever you do to git history afterwards.
 2. Only after rotating, consider scrubbing it from history (e.g. with
