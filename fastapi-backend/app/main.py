@@ -12,7 +12,7 @@ from app.config import settings
 from app.database import close_client, create_indexes, get_database, ping
 from app.limiter import limiter
 from app.middleware import LimitBodySizeMiddleware, SecurityHeadersMiddleware
-from app.routers import auth, dashboard, ingest
+from app.routers import auth, dashboard, ingest, mitre
 
 
 @asynccontextmanager
@@ -54,6 +54,7 @@ app.add_middleware(
 app.include_router(ingest.router)
 app.include_router(auth.router)
 app.include_router(dashboard.router)
+app.include_router(mitre.router)
 
 
 @app.get("/health")

@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, Res
 
 from app import geo
 from app.cmdkey import KEY_PATTERN
+from app.mitre import TECH_PATTERN
 from app.auth import get_current_admin
 from app.config import settings
 from app.database import aggregate, get_database
@@ -153,6 +154,7 @@ async def list_sessions(
     login: Literal["all", "granted", "denied"] = "all",
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
+    technique: Optional[str] = Query(None, pattern=TECH_PATTERN, description="MITRE technique id"),
     sort: str = Query("start_time"),
     order: Literal["asc", "desc"] = "desc",
     current_admin: str = Depends(get_current_admin),
@@ -169,6 +171,8 @@ async def list_sessions(
         flt["login_success"] = {"$ne": True}
     if (rng := _date_range(date_from, date_to)):
         flt["start_time"] = rng
+    if technique:
+        flt["techniques"] = technique
 
     db = get_database()
     response.headers[TOTAL_HEADER] = str(await db.sessions.count_documents(flt))
@@ -211,6 +215,7 @@ async def list_attackers(
     date_from: Optional[datetime] = None,
     date_to: Optional[datetime] = None,
     date_field: Literal["last_seen", "first_seen"] = "last_seen",
+    technique: Optional[str] = Query(None, pattern=TECH_PATTERN, description="MITRE technique id"),
     sort: str = Query("last_seen"),
     order: Literal["asc", "desc"] = "desc",
     current_admin: str = Depends(get_current_admin),
@@ -223,6 +228,8 @@ async def list_attackers(
         flt["_id"] = rx
     if (rng := _date_range(date_from, date_to)):
         flt[date_field] = rng
+    if technique:
+        flt["techniques"] = technique
 
     db = get_database()
     response.headers[TOTAL_HEADER] = str(await db.ip_intel.count_documents(flt))
@@ -239,7 +246,7 @@ async def list_attackers(
 @router.get("/debug/client-ip")
 async def debug_client_ip(request: Request, current_admin: str = Depends(get_current_admin)) -> Dict[str, Any]:
     """
-    Helps you pick TRUSTED_PROXY_HOPS after deploying (assets repo: cowrie_vps_setup_guide.md, Step 0b):
+    Helps you pick TRUSTED_PROXY_HOPS after deploying (backend repo: cowrie_vps_setup_guide.md, Step 0b):
     call this from your own machine, compare with your real public IP
     (e.g. from https://ifconfig.me), and choose the hop count that makes
     `rate_limit_key` equal your IP.
@@ -336,11 +343,12 @@ def _group_stages(match: Dict[str, Any]) -> List[Dict[str, Any]]:
             "sessions": {"$addToSet": "$session_id"},
             "first_ts": {"$min": "$timestamp"},
             "last_ts": {"$max": "$timestamp"},
+            "techniques": {"$first": "$techniques"},
         }},
         {"$project": {
             "_id": 0, "key": "$_id", "text": 1, "count": 1,
             "ip_count": {"$size": "$ips"}, "session_count": {"$size": "$sessions"},
-            "first_ts": 1, "last_ts": 1,
+            "first_ts": 1, "last_ts": 1, "techniques": {"$ifNull": ["$techniques", []]},
         }},
     ]
 
@@ -351,6 +359,7 @@ async def list_command_groups(
     limit: int = Query(100, ge=1, le=MAX_PAGE),
     skip: int = Query(0, ge=0, le=100_000),
     q: Optional[str] = Query(None, max_length=200, description="command text contains"),
+    technique: Optional[str] = Query(None, pattern=TECH_PATTERN, description="MITRE technique id"),
     sort: str = Query("count"),
     order: Literal["asc", "desc"] = "desc",
     current_admin: str = Depends(get_current_admin),
@@ -362,6 +371,8 @@ async def list_command_groups(
     match: Dict[str, Any] = {"cmd_key": {"$exists": True}}
     if (rx := _contains(q)):
         match["input"] = rx
+    if technique:
+        match["techniques"] = technique
     db = get_database()
 
     total = 0
