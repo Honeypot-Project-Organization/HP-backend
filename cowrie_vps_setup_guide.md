@@ -18,15 +18,23 @@ needed), see **Local development** at the end.
 ## Step 0 — MongoDB Atlas
 
 1. **Create the cluster:** Atlas → Build a Database → M0 (free tier), any region.
-2. **Create a least-privilege database user:** Atlas → Database Access →
-   Add New Database User (username/password auth). Under *Database User
-   Privileges*, choose **Specific Privileges → `readWrite` @ `honeypot`**.
-   Don't use "Atlas admin". If this password ever leaks, the damage is then
-   limited to this one database.
+2. **Create the API's database user with a custom role.** The database is
+   named `honeypot-project`; it must match `DB_NAME` in Step 0b.
+   - Atlas → Database Access → **Custom Roles** → Add New Custom Role.
+     Add the collection-level privileges listed in
+     `docs/database-security.md` ("The API's custom role"). In short:
+     read and write on the collections the API fills, read-only on
+     `admins` and the location data, and index management. A plain
+     `readWrite` role is not enough: it would also let the API write
+     `admins`.
+   - Atlas → Database Access → **Database Users** → Add New Database User
+     (password auth), and give it only that custom role.
+   - Don't use "Atlas admin" or "Read and write to any database". If this
+     password ever leaks, the damage stays inside this one database.
 3. **Network Access:** Atlas → Network Access → Add IP Address. Use your API
    host's published outbound IPs if it has any. Otherwise `0.0.0.0/0` is
-   the fallback: credentials are still required, and the user above can
-   only touch one database.
+   the fallback: credentials and TLS are still required, and the user above
+   can only touch one database.
 4. **Get the connection string:** Atlas → Database → Connect → Drivers:
    `mongodb+srv://<user>:<password>@<cluster>.mongodb.net/?retryWrites=true&w=majority`.
    This is your `MONGO_URI`.
@@ -38,12 +46,19 @@ needed), see **Local development** at the end.
 6. **Upgrading from the old version, with data already in Atlas?** Run
    `python scripts/migrate_timestamps.py` once. It converts old
    string timestamps into real dates.
+7. **One-time scripts need a temporary admin user.** `create_admin.py`,
+   `upload_geoip.py` and `migrate_timestamps.py` write where the API's user
+   can't. Don't keep a permanent admin user for them. Instead, in Atlas →
+   Database Users → Add New Database User, give it `readWrite` on
+   `honeypot-project` and turn on **"Temporary User"** (6 hours is plenty).
+   Put its connection string in your local `.env` only while you run the
+   script, then switch `.env` back. Atlas deletes the user on its own.
 
 ## Step 0b — Deploy the API (FastAPI Cloud or similar)
 
 1. Set these environment variables on the host (full list and comments are
    in `fastapi-backend/.env.example`):
-   - `MONGO_URI`, `DB_NAME=honeypot`
+   - `MONGO_URI` (the API user from Step 0), `DB_NAME=honeypot-project`
    - `INGEST_API_KEY` and `JWT_SECRET_KEY`: two **different** values,
      each generated with
      `python -c "import secrets; print(secrets.token_hex(32))"`
@@ -54,7 +69,8 @@ needed), see **Local development** at the end.
    503 means the API can't reach Atlas: check `MONGO_URI` and Network
    Access.
 3. **Create the admin account** from your own machine, with the same `.env`
-   values: `cd fastapi-backend && python scripts/create_admin.py`. The
+   values except `MONGO_URI`, which uses the temporary admin user from
+   Step 0 item 7: `cd fastapi-backend && python scripts/create_admin.py`. The
    password needs at least 14 characters; a passphrase of 4+ random words
    works well.
 4. **Rate limiting behind a proxy.** The login limit of 10 per minute is
